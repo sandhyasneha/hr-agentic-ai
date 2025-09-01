@@ -1,0 +1,34 @@
+{
+  "employees": {
+    "24643@entityd@acall.": {
+      "balances": {
+        "CL": 11,
+        "SL": 12,
+        "PL": 45,
+        "PAT": 8
+      },
+      "lastRequest": {
+        "code": "CL",
+        "start": "2025-09-15",
+        "end": "2025-09-15",
+        "days": 1,
+        "status": "APPROVED"
+      }
+    },
+    "24643identityd@acall.": {
+      "balances": {
+        "CL": 11,
+        "SL": 12,
+        "PL": 45,
+        "PAT": 8
+      },
+      "lastRequest": {
+        "code": "CL",
+        "start": "2025-09-10",
+        "end": "2025-09-10",
+        "days": 1,
+        "status": "APPROVED"
+      }
+    }
+  }
+}
