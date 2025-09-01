@@ -32,7 +32,7 @@ function getEmp(db, email) {
   return db.employees[key];
 }
 
-// ---------- email (optional) ----------
+// ---------- email setup ----------
 let mailer = null;
 if (process.env.SMTP_HOST) {
   mailer = nodemailer.createTransport({
@@ -42,11 +42,19 @@ if (process.env.SMTP_HOST) {
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
   });
 }
-async function emailConfirmation(to, body) {
+
+async function emailConfirmation(toEmail, body) {
   if (!mailer) return;
   try {
-    await mailer.sendMail({ from: process.env.SMTP_FROM, to, subject: 'Leave Confirmation', text: body });
-  } catch (_) {}
+    await mailer.sendMail({
+      from: process.env.SMTP_FROM || 'NTT HR SERVICES <chan2006@gmail.com>',
+      to: toEmail, // employee portal ID
+      subject: 'Leave Application Confirmation',
+      text: body
+    });
+  } catch (e) {
+    console.error('Email send failed:', e?.message || e);
+  }
 }
 
 // ---------- session + helpers ----------
@@ -91,11 +99,11 @@ app.use((req, _res, next) => { console.log('[REQ]', req.method, req.path); next(
 
 // ---------- IVR ROUTES ----------
 
-// Entry: ask for portal ID
+// Entry
 app.all('/voice', (req, res) => {
   const vr = new VoiceResponse();
   const g = gather(vr, { action: '/id', numDigits: 50 });
-  say(g, 'Welcome to NTT H R Assistant. Please say or enter your employee portal I D, for example 2 4 6 4 3 3 at n t t data dot com.');
+  say(g, 'Welcome to N T T Data H R Assistant. Please say or enter your employee portal I D, for example 2 4 6 4 3 3 at n t t data dot com.');
   res.set('Content-Type', 'text/xml; charset=utf-8');
   res.status(200).send(vr.toString());
 });
@@ -156,7 +164,7 @@ app.all('/apply/type', (req, res) => {
   res.send(vr.toString());
 });
 
-// Apply: dates -> approve -> deduct
+// Apply: dates
 app.all('/apply/dates', (req, res) => {
   const vr = new VoiceResponse();
   const sess = S(req.body.CallSid);
@@ -167,6 +175,7 @@ app.all('/apply/dates', (req, res) => {
     res.set('Content-Type', 'text/xml; charset=utf-8');
     return res.send(vr.toString());
   }
+
   const db = readDB();
   const emp = getEmp(db, sess.email);
   const days = Math.max(1, Math.round((dates.end - dates.start) / (1000 * 60 * 60 * 24)) + 1);
@@ -186,8 +195,12 @@ app.all('/apply/dates', (req, res) => {
   writeDB(db);
 
   const msg = `Your ${sess.leaveCode} leave is applied from ${emp.lastRequest.start} to ${emp.lastRequest.end}. Status: APPROVED.`;
-  emailConfirmation(sess.email, msg).catch(() => {});
+
+  const to = sess.email; // employee portal ID
+  emailConfirmation(to, msg).catch(() => {});
+
   say(vr, msg);
+  say(vr, `A confirmation email has been sent to ${to.replace('@',' at ')}.`);
   say(vr, 'You can check the leave status later by choosing option 2, or balance by option 3. Thank you.');
 
   res.set('Content-Type', 'text/xml; charset=utf-8');
@@ -222,7 +235,7 @@ app.all('/balance', (req, res) => {
 });
 
 // ---------- root page ----------
-app.get('/', (_, res) => res.send('HR Voice IVR (Lite) running.'));
+app.get('/', (_, res) => res.send('HR Voice IVR running on Render.'));
 
 // ---------- start ----------
 app.listen(process.env.PORT || 3000, () => console.log('Lite server started'));
