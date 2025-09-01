@@ -46,11 +46,23 @@ if (process.env.SMTP_HOST) {
 async function emailConfirmation(toEmail, body) {
   if (!mailer) return;
   try {
+    const htmlBody = `
+      <div style="font-family: Arial, sans-serif; padding:20px; border:1px solid #ddd;">
+        <h2 style="color:#0072c6;">NTT DATA HR SERVICES</h2>
+        <p>Hello,</p>
+        <p>${body}</p>
+        <p>Regards,<br/>NTT DATA HR Assistant</p>
+        <hr/>
+        <small style="color:#555;">This is an automated message from the NTT DATA HR Assistant POC.</small>
+      </div>
+    `;
+
     await mailer.sendMail({
       from: process.env.SMTP_FROM || 'NTT HR SERVICES <chan2006@gmail.com>',
-      to: toEmail, // employee portal ID
+      to: toEmail,
       subject: 'Leave Application Confirmation',
-      text: body
+      text: body,   // plain text fallback
+      html: htmlBody // HTML branded version
     });
   } catch (e) {
     console.error('Email send failed:', e?.message || e);
