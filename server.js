@@ -113,42 +113,72 @@ function normalizeEmail(s) {
   if (!s) return null;
   let t = String(s).toLowerCase();
 
-  // common ASR: " at " / " dot "
-  t = t.replace(/\s+at\s+/g, '@');
-  t = t.replace(/\s+dot\s+/g, '.');
+  // Convert spoken tokens first (keep spaces so patterns match)
+  t = t.replace(/\b(at)\b/gi, '@');
+  t = t.replace(/\b(dot)\b/gi, '.');
 
-  // remove all spaces (handles "n t t data")
+  // Remove commas and other small punctuation the ASR inserts
+  t = t.replace(/[,\u2019\u2018\u201C\u201D]/g, '');
+
+  // Collapse whitespace (so "n t t data" → "nttdata")
   t = t.replace(/\s+/g, '');
 
-  // sometimes ASR returns unicode punctuation; keep only email-ish chars
+  // Common ASR word swaps → normalize toward nttdata.com
+  t = t.replace(/entity/g, 'ntt');      // "entity" ≈ "n t t"
+  t = t.replace(/enit|inti|anti/g, 'ntt'); // a few likely slips → ntt
+
+  // Strip anything not email-ish
   t = t.replace(/[^a-z0-9@._-]+/g, '');
 
-  // collapse multiple dots
-  t = t.replace(/\.+/g, '.');
+  // Collapse multiple dots and strip trailing dots
+  t = t.replace(/\.+/g, '.').replace(/\.+$/g, '');
 
-  // strip trailing dots or stray punctuation
-  t = t.replace(/[._-]+$/g, '');
+  // If it looks like "######@something", try to fix domain variants
+  const m = t.match(/^(\d{6})@([a-z0-9._-]+)$/i);
+  if (m) {
+    const six = m[1];
+    let dom = m[2];
+
+    // Normalize obvious near-misses:
+    // "nttdatado" → "nttdata.com", "nttdata" → "nttdata.com"
+    if (/^ntt.?data(?:\.?co?m?)?$/i.test(dom) === false) {
+      // If domain STARTS with ntt and includes data, force to nttdata.com
+      if (/^ntt/.test(dom) && /data/.test(dom)) {
+        dom = 'nttdata.com';
+      }
+    }
+
+    // Specific tail repairs
+    if (/^nttdata(?:\.?co?m?)?$/i.test(dom)) dom = 'nttdata.com';
+    if (dom === 'nttdatado' || dom === 'nttdata.do' || dom === 'nttdata.do.') dom = 'nttdata.com';
+
+    // Allow "ntt.data.com"
+    if (dom === 'ntt.data.com') dom = 'nttdata.com';
+
+    t = `${six}@${dom}`;
+  }
 
   return t;
 }
 
 // 2) Relaxed validator that still enforces your rule (6 digits @ nttdata.com / ntt.data.com)
 function isValidNTTEmail(email) {
+  function isValidNTTEmail(email) {
   if (!email) return false;
 
-  // Try strict first
-  const strict = /^\s*(\d{6})@(nttdata\.com|ntt\.data\.com)\s*$/i;
-  if (strict.test(email)) return true;
+  // Strict check first
+  if (/^\d{6}@(nttdata\.com|ntt\.data\.com)$/i.test(email)) return true;
 
-  // Fallback: extract first email-like token, then check pattern
-  const m = email.match(/(\d{6})@([a-z0-9.-]+)/i);
+  // If the domain is clearly ntt+data without perfect dots, accept after correction
+  const m = email.match(/^(\d{6})@([a-z0-9.-]+)$/i);
   if (!m) return false;
   const six = m[1];
-  const domain = m[2];
+  const dom = m[2];
 
-  // Accept "nttdata.com" or "ntt.data.com" (sometimes ASR inserts or removes a dot)
-  const okDomain = /^(ntt\.?data\.com)$/.test(domain);
-  return /^\d{6}$/.test(six) && okDomain;
+  // If domain resembles ntt(data) in any common ASR ways, treat it as valid
+  if (/^ntt.?data(?:\.?co?m?)?$/i.test(dom)) return true;
+
+  return false;
 }
 
 // ---------- Logger ----------
