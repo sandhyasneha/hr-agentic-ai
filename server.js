@@ -11,7 +11,18 @@ const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-// ---------- Data (file-based) ----------
+// ------------------- Demo Email Mapping -------------------
+// Map 6-digit portal IDs to real routable inboxes for the POC/demo.
+// Add any IDs you plan to use during the demo here.
+const DEMO_EMAILS = {
+  "246433": "ramachandran.sridharan@nttdata.com",
+  // "123456": "chan2006@gmail.com",
+};
+function resolveEmailFromId(id) {
+  return DEMO_EMAILS[id] || `${id}@nttdata.com`;
+}
+
+// ------------------- Data (file-based) -------------------
 const DB_FILE = path.join(__dirname, 'data', 'leaves.json');
 fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
 
@@ -21,7 +32,7 @@ function readDB() {
 }
 function writeDB(db) { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
 
-// Seed balances for demo
+// Seed balances for demo (PL=10, CL=8, SL=9, PAT=8)
 const SEED = { CL: 8, PL: 10, SL: 9, PAT: 8 };
 
 function getEmp(db, email) {
@@ -35,7 +46,7 @@ function getEmp(db, email) {
   return db.employees[key];
 }
 
-// ---------- Email ----------
+// ------------------- Email (SMTP) -------------------
 let mailer = null;
 if (process.env.SMTP_HOST) {
   mailer = nodemailer.createTransport({
@@ -44,7 +55,16 @@ if (process.env.SMTP_HOST) {
     secure: false,
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
   });
+
+  // Optional: print readiness in logs
+  if (mailer.verify) {
+    mailer.verify((err) => {
+      if (err) console.error('SMTP verify failed:', err?.message || err);
+      else console.log('SMTP ready');
+    });
+  }
 }
+
 async function emailConfirmation(toEmail, body) {
   if (!mailer) return;
   try {
@@ -57,19 +77,22 @@ async function emailConfirmation(toEmail, body) {
         <hr/>
         <small style="color:#555;">This is an automated message from the NTT DATA HR Assistant MVP.</small>
       </div>`;
-    await mailer.sendMail({
-      from: process.env.SMTP_FROM || 'NTT HR SERVICES <chan2006@gmail.com>',
-      to: toEmail,
+    const fromAddr = process.env.SMTP_FROM || `NTT HR SERVICES <${process.env.SMTP_USER}>`;
+
+    const info = await mailer.sendMail({
+      from: fromAddr,
+      to: toEmail,           // <-- routable demo inbox (mapped)
       subject: 'Leave Application Confirmation',
       text: body,
       html: htmlBody
     });
+    console.log(`Email queued → to:${toEmail} msgId:${info?.messageId || 'n/a'}`);
   } catch (e) {
     console.error('Email send failed:', e?.message || e);
   }
 }
 
-// ---------- Helpers ----------
+// ------------------- Helpers -------------------
 const sessions = new Map();
 const S = sid => (sessions.has(sid) ? sessions.get(sid) : (sessions.set(sid, {}), sessions.get(sid)));
 
@@ -77,7 +100,7 @@ const LEAVE_MAP = {
   'casual': 'CL', 'casual leave': 'CL', 'cl': 'CL',
   'personal': 'PL', 'personal leave': 'PL', 'pl': 'PL',
   'paternity': 'PAT', 'paternity leave': 'PAT', 'pat': 'PAT',
-  'sick': 'SL', 'sick leave': 'SL', 'sl': 'SL'
+  'sick': 'SL', 'sick leave': 'SL', 'sl': 'SL' // supported if spoken
 };
 
 function parseLeaveType(s) {
@@ -99,7 +122,7 @@ function parseDates(s) {
 const say = (vr, t) => vr.say({ voice: 'alice', language: 'en-IN' }, t);
 const gather = (vr, a = {}) => vr.gather({
   input: 'speech dtmf',
-  numDigits: a.numDigits || 6, // for DTMF we expect 6 digits
+  numDigits: a.numDigits || 6, // DTMF path uses 6 digits for ID
   timeout: a.timeout || 6,
   action: a.action,
   method: 'POST',
@@ -107,31 +130,31 @@ const gather = (vr, a = {}) => vr.gather({
   hints: a.hints
 });
 
-// ---------- NEW: capture only 6-digit ID ----------
-function extractSixDigitId(speech, digits) {
-  // If DTMF was used:
+// Capture only the 6-digit ID (speech or DTMF). Build email separately.
+function extractEmployeeId(speech, digits) {
+  // DTMF path (numbers pressed)
   if (digits && /^\d+$/.test(String(digits))) {
     const d = String(digits).match(/\d/g) || [];
     const id = d.join('').slice(0, 6);
     return id.length === 6 ? id : null;
   }
 
+  // Speech path
   if (!speech) return null;
   const raw = String(speech).toLowerCase();
-
-  // Remove commas/quotes etc, keep digits and spaces so "2 4 6 4 3 3" works
+  // Keep digits and spaces; remove others; then compress spaces
   const cleaned = raw.replace(/[^\d\s]/g, ' ').replace(/\s+/g, ' ').trim();
-
-  // Pull all digits and take the first 6
   const onlyDigits = (cleaned.match(/\d/g) || []).join('');
   const id = onlyDigits.slice(0, 6);
   return id.length === 6 ? id : null;
 }
 
-// ---------- Logger ----------
+// ------------------- Logger -------------------
 app.use((req, _res, next) => { console.log('[REQ]', req.method, req.path); next(); });
 
-// ---------- IVR FLOW ----------
+// ------------------- IVR FLOW -------------------
+
+// Entry: ask for 6-digit ID
 app.all('/voice', (req, res) => {
   const vr = new VoiceResponse();
   const g = gather(vr, { action: '/id', numDigits: 6 });
@@ -140,23 +163,24 @@ app.all('/voice', (req, res) => {
   res.status(200).send(vr.toString());
 });
 
+// Handle ID
 app.all('/id', (req, res) => {
   const vr = new VoiceResponse();
   const spoken = req.body.SpeechResult;
   const digits = req.body.Digits;
 
-  const six = extractSixDigitId(spoken, digits);
-  console.log('[ID] SpeechResult =', spoken, '| Digits =', digits, '| ParsedID =', six);
+  const id = extractEmployeeId(spoken, digits);
+  console.log('[ID] SpeechResult =', spoken, '| Digits =', digits, '| ParsedID =', id);
 
-  if (!six) {
+  if (!id) {
     say(vr, 'Sorry, no valid input received. Thank you.');
     return res.type('text/xml').send(vr.toString());
   }
 
-  const email = `${six}@nttdata.com`;
+  const portalEmail = `${id}@nttdata.com`;  // stored identifier in our DB
   const sess = S(req.body.CallSid);
-  sess.employeeId = six;
-  sess.email = email;
+  sess.employeeId = id;
+  sess.email = portalEmail;
 
   const g = gather(vr, { action: '/menu' });
   say(g, 'Thank you. Please choose menu carefully. Option 1, apply leave. Option 2, check your leave status.');
@@ -219,7 +243,7 @@ app.all('/apply/dates', (req, res) => {
   const days = Math.max(1, Math.round((dates.end - dates.start) / (1000 * 60 * 60 * 24)) + 1);
 
   const db = readDB();
-  const emp = getEmp(db, sess.email);
+  const emp = getEmp(db, sess.email); // keep using the portal email as the key
 
   // Duplicate check
   const dup = emp.requests.find(r => r.code === sess.leaveCode && r.start === startStr && r.end === endStr);
@@ -242,11 +266,17 @@ app.all('/apply/dates', (req, res) => {
   emp.requests.push(reqObj);
   writeDB(db);
 
+  // Build the email body
   const msg = `Your ${sess.leaveCode} leave is applied from ${startStr} to ${endStr}. Status: APPROVED.`;
-  const to = sess.email;
+
+  // Resolve a routable demo inbox based on 6-digit ID
+  const to = resolveEmailFromId(sess.employeeId);
   emailConfirmation(to, msg).catch(() => {});
 
+  // Announce to caller using the portal-style address (kept for experience)
+  const announced = `${sess.employeeId}@nttdata.com`;
   say(vr, `Your ${friendlyName(sess.leaveCode)} has been applied from ${sayDate(startStr)} to ${sayDate(endStr)}. It is approved. Please check your email.`);
+  say(vr, `A confirmation email has been sent to ${announced.replace('@', ' at ')}.`);
   say(vr, 'You can check your leave status later by choosing option 2. Thank you.');
   res.set('Content-Type', 'text/xml; charset=utf-8');
   res.send(vr.toString());
@@ -275,7 +305,7 @@ app.all('/status', (req, res) => {
 // Root
 app.get('/', (_, res) => res.send('NTT DATA HR Assistant IVR — running.'));
 
-// Utils
+// ------------------- Utils -------------------
 function friendlyName(code) {
   return code === 'CL' ? 'Casual leave'
     : code === 'PL' ? 'Personal leave'
@@ -290,5 +320,5 @@ function sayDate(iso) {
   return `${d} ${months[m-1]} ${y}`;
 }
 
-// Start
+// ------------------- Start -------------------
 app.listen(process.env.PORT || 3000, () => console.log('Server started'));
